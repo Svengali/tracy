@@ -181,6 +181,20 @@ template<class T>
 class Lockable
 {
 public:
+
+	static constexpr SourceLocationData s_default_loc = {
+		"{unknown}",
+		"{unknown}",
+		"{unknown}",
+		0xbf1f1f,
+		0xbf1f1f,
+	};
+
+    tracy_force_inline Lockable()
+        : m_ctx( &s_default_loc )
+    {
+    }
+
     tracy_force_inline Lockable( const SourceLocationData* srcloc )
         : m_ctx( srcloc )
     {
