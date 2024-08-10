@@ -5,6 +5,17 @@ here.
 vx.xx.x (xxxx-xx-xx)
 --------------------
 
+- Utilities import-chrome and import-fuchsia now live together in the import
+  directory.
+- Added TRACY_VERBOSE to available CMake options.
+- It is now possible to set TRACY_SAMPLING_HZ via a environment variable.
+- Thread group hints can be now used to group threads together in the
+  profiler UI.
+
+
+v0.11.0 (2024-07-16)
+--------------------
+
 - Support for pre-0.9 traces has been dropped.
 - The old server-side build system has been replaced by CMake. The client
   integration is not affected. Refer to the manual for details.
@@ -107,9 +118,29 @@ vx.xx.x (xxxx-xx-xx)
   wayland-protocols to be installed. A reasonably recent release of the
   protocols is required, which, as always, is not available on Ubuntu.
   Seriously, stop trying to build modern software with that broken distro.
+- Fractional DPI scaling is now properly supported on Wayland.
 - Added Python bindings.
 - The per-line sampling statistics are now also displayed as a percentage
   of total program run time.
+- The out-of-focus render frame rate reduction can be now disabled in
+  global settings.
+- It is now possible to load source files that are newer than the trace.
+  The default setting is still to reject such files.
+- Memory limit for a capture can be now set, both in the GUI profiler and
+  in the capture utility.
+- Thread list can be now sorted alphabetically.
+- It is now possible to adjust plot height.
+- Trace comparison statistics were expanded and made more clear.
+- Implemented retrieval of kernel symbol code on Linux.
+- Added support for multiple compression streams in trace files. This
+  effectively parallelizes both load and save operations.
+  - The default save setup is now set to Zstd level 3 with 4 compression
+    streams. This gives both faster compression time and smaller file size.
+- New users will be now eased into the profiler with a set of tutorial
+  achievements.
+- You can now set the timeline options default values in global settings.
+- Added a check for program memory being available before symbol retrieval
+  on Windows.
 
 
 v0.10.0 (2023-10-16)
