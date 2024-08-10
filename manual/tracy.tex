@@ -19,6 +19,7 @@
 \usepackage{xfrac}
 \usepackage[euler]{textgreek}
 \usepackage{nameref}
+\usepackage{diagbox}
 
 \usepackage[hmarginratio=1:1,top=32mm,columnsep=20pt]{geometry} % Document margins
 \geometry{a4paper,textwidth=6.5in,hmarginratio=1:1,
@@ -637,6 +638,10 @@ Although the basic features will work without them, you'll have to grant elevate
     \item \texttt{-{}-pid=host}
 \end{itemize}
 
+\subsubsection{Troubleshooting}
+
+Setting the \texttt{TRACY\_VERBOSE} variable will make the client display advanced information about the detected features. By matching those debug prints to the source code, you might be able to uncover why some of the features are missing on your platform.
+
 \subsubsection{Changing network port}
 
 By default, the client and server communicate on the network using port 8086. The profiling session utilizes the TCP protocol, and the client sends presence announcement broadcasts over UDP.
@@ -790,7 +795,7 @@ logo=\bclampe
 The \texttt{CMakeLists.txt} file only contains the general definition of how the program should be built. To be able to actually compile the program, you must first create a build directory that takes into account the specific compiler you have on your system, the set of available libraries, the build options you specify, and so on. You can do this by issuing the following command, in this case for the \texttt{profiler} utility:
 
 \begin{lstlisting}[language=sh]
-cmake -B profiler/build -S profiler
+cmake -B profiler/build -S profiler -DCMAKE_BUILD_TYPE=Release
 \end{lstlisting}
 
 Now that you have a build directory, you can actually compile the program. For example, you could run the following command:
@@ -864,6 +869,25 @@ logo=\bcbombe
 Please don't ask about window decorations in Gnome. The current behavior is the intended behavior. Gnome does not want windows to have decorations, and Tracy respects that choice. If you find this problematic, use a desktop environment that actually listens to its users.
 \end{bclogo}
 
+\subsubsection{Using an IDE}
+
+The recommended development environment is Visual Studio Code\footnote{\url{https://code.visualstudio.com/}}. This is a cross-platform solution, so you always get the same experience, no matter what OS you are using.
+
+VS Code is highly modular, and unlike some other IDEs, it does not come with a compiler. You will need to have one, such as gcc or clang, already installed on your system. On Windows, you should have MSVC 2022 installed in order to have access to its build tools.
+
+When you open the Tracy directory in VS Code, it will prompt you to install some recommended extensions: clangd, CodeLLDB, and CMake Tools. You should do this if you don't already have them.
+
+The CMake build configuration will begin immediately. It is likely that you will be prompted to select a development kit to use; for example, you may have a preference as to whether you want to use gcc or clang, and CMake will need to be told about it.
+
+After the build configuration phase is over, you may want to make some further adjustments to what is being built. The primary place to do this is in the \emph{Project Status} section of the CMake side panel. The two key settings there are also available in the status bar at the bottom of the window:
+
+\begin{itemize}
+\item The \emph{Folder} setting allows you to choose which Tracy utility you want to work with. Select "profiler" for the profiler's GUI.
+\item The \emph{Build variant} setting is used to toggle between the debug and release build configurations.
+\end{itemize}
+
+With all this taken care of, you can now start the program with the \keys{F5} key, set breakpoints, get code completion and navigation\footnote{To get the Intellisense experience if you are using the MSVC compiler, you need to do some additional setup. First, you need to install Ninja (\url{https://ninja-build.org/}). The Meson installer (\url{https://github.com/mesonbuild/meson/releases}) is probably the most convenient way to do this. Then you need to set the \texttt{cmake.generator} option in the VS Code settings to \texttt{Ninja}. Once this is done, all you have to do is wipe the existing build directories and run the CMake configuration again.}, and so on.
+
 \subsubsection{Embedding the server in profiled application}
 \label{embeddingserver}
 
@@ -889,6 +913,8 @@ The graphic server application will adapt to the system DPI scaling. If for some
 \label{namingthreads}
 
 Remember to set thread names for proper identification of threads. You should do so by using the function \texttt{tracy::SetThreadName(name)} exposed in the \texttt{public/common/TracySystem.hpp} header, as the system facilities typically have limited functionality.
+
+It is also possible to specify a thread group hint with \texttt{tracy::SetThreadNameWithHint(name, int32\_t groupHint)}. This hint is an arbitrary number that is used to group threads together in the profiler UI. The default value and the value for the main thread is zero.
 
 Tracy will try to capture thread names through operating system data if context switch capture is active. However, this is only a fallback mechanism, and it shouldn't be relied upon.
 
@@ -1668,7 +1694,7 @@ Fibers are lightweight threads, which are not under the operating system's contr
 
 To enable fiber support in the client code, you will need to add the \texttt{TRACY\_FIBERS} define to your project. You need to do this explicitly, as there is a small performance hit due to additional processing.
 
-To properly instrument fibers, you will need to modify the fiber dispatch code in your program. You will need to insert the \texttt{TracyFiberEnter(fiber)} macro every time a fiber starts or resumes execution. You will also need to insert the \texttt{TracyFiberLeave} macro when the execution control in a thread returns to the non-fiber part of the code. Note that you can safely call \texttt{TracyFiberEnter} multiple times in succession, without an intermediate \texttt{TracyFiberLeave} if one fiber is directly switching to another, without returning control to the fiber dispatch worker.
+To properly instrument fibers, you will need to modify the fiber dispatch code in your program. You will need to insert the \texttt{TracyFiberEnter(fiber)} macro every time a fiber starts or resumes execution\footnote{You can also provide fiber grouping hints, the same way as for threads, with the \texttt{TracyFiberEnterHint(fiber, groupHint)} macro.}. You will also need to insert the \texttt{TracyFiberLeave} macro when the execution control in a thread returns to the non-fiber part of the code. Note that you can safely call \texttt{TracyFiberEnter} multiple times in succession, without an intermediate \texttt{TracyFiberLeave} if one fiber is directly switching to another, without returning control to the fiber dispatch worker.
 
 Fibers are identified by unique \texttt{const char*} string names. Remember that you should observe the rules laid out in section~\ref{uniquepointers} while handling such strings.
 
@@ -2316,6 +2342,7 @@ See below for example steps to build the Python bindings using CMake:
 mkdir build
 cd build
 cmake -DTRACY_STATIC=OFF -DTRACY_CLIENT_PYTHON=ON ../
+make -j$(nproc)
 \end{lstlisting}
 
 Once this has finished building the Python package can be built as follows:
@@ -2536,6 +2563,7 @@ You can capture a trace using a command line utility contained in the \texttt{ca
 \item \texttt{-p port} -- network port which should be used (optional).
 \item \texttt{-f} -- force overwrite, if output file already exists.
 \item \texttt{-s seconds} -- number of seconds to capture before automatically disconnecting (optional).
+\item \texttt{-m memlimit} -- sets memory limit for the trace. The connection will be terminated, if it is exceeded. Specified as a percentage of total system memory. Can be greater than 100\%, which will use swap. Disabled, if not set.
 \end{itemize}
 
 If no client is running at the given address, the server will wait until it can make a connection. During the capture, the utility will display the following information:
@@ -2557,6 +2585,8 @@ You can disconnect from the client and save the captured trace by pressing \keys
 
 If you want to look at the profile data in real-time (or load a saved trace file), you can use the data analysis utility contained in the \texttt{profiler} directory. After starting the application, you will be greeted with a welcome dialog (figure~\ref{welcomedialog}), presenting a bunch of useful links (\faBook{}~\emph{User manual}, \faGlobeAmericas{}~\emph{Web}, \faComment~\emph{Join chat} and \faHeart{}~\emph{Sponsor}). The \faGlobeAmericas{}~\emph{Web} button opens a drop-down list with links to the profiler's \emph{\faHome{}~Home page} and a bunch of \emph{\faVideo{}~Feature videos}.
 
+The \emph{\faWrench{}~Wrench} button opens the about dialog, which also contains a number of global settings you may want to tweak.
+
 The client \emph{address entry} field and the \faWifi{}~\emph{Connect} button are used to connect to a running client\footnote{Note that a custom port may be provided here, for example by entering '127.0.0.1:1234'.}. You can use the connection history button~\faCaretDown{} to display a list of commonly used targets, from which you can quickly select an address. You can remove entries from this list by hovering the \faMousePointer{}~mouse cursor over an entry and pressing the \keys{\del} button on the keyboard.
 
 If you want to open a trace that you have stored on the disk, you can do so by pressing the \faFolderOpen{}~\emph{Open saved trace} button.
@@ -2565,8 +2595,12 @@ The \emph{discovered clients} list is only displayed if clients are broadcasting
 
 \begin{figure}[h]
 \centering\begin{tikzpicture}
-\draw (0, 0) rectangle (4.95, -3.2);
-\draw[pattern=crosshatch dots] (0, 0) rectangle+(4.95, 0.3);
+\draw (0, 0.8) rectangle (4.95, -3.2);
+\draw[pattern=crosshatch dots] (0, 0.8) rectangle+(4.95, 0.3);
+
+\draw (1.0, 0.65) node[anchor=north west] {\large{}Tracy Profiler};
+\draw[rounded corners=5pt] (4.33, 0.6) rectangle+(0.5, -0.5) node[midway] {\faWrench};
+
 \draw[rounded corners=5pt] (0.1, -0.1) rectangle+(1.1, -0.5) node [midway] {\faBook};
 \draw[rounded corners=5pt] (1.3, -0.1) rectangle+(1.1, -0.5) node [midway] {\faGlobeAmericas};
 \draw[rounded corners=5pt] (2.5, -0.1) rectangle+(1.1, -0.5) node [midway] {\faComment};
@@ -2655,46 +2689,47 @@ The new file contains the same data as the old one but with an updated internal 
 The \texttt{update} utility supports optional higher levels of data compression, which reduce disk size of traces at the cost of increased compression times. The output files have a reasonable size and are quick to save and load with the default settings. A list of available compression modes and their respective results is available in table~\ref{compressiontimes} and figures~\ref{savesize}, \ref{savetime} and~\ref{loadtime}. The following command-line options control compression mode selection:
 
 \begin{itemize}
+\item \texttt{-4} -- selects LZ4 algorithm.
 \item \texttt{-h} -- enables LZ4 HC compression.
 \item \texttt{-e} -- uses LZ4 extreme compression.
 \item \texttt{-z level} -- selects Zstandard algorithm, with a specified compression level.
 \end{itemize}
 
-\begin{table}[h]
+\begin{table}
 \centering
 \begin{tabular}[h]{c|c|c|c|c}
 \textbf{Mode} & \textbf{Size} & \textbf{Ratio} & \textbf{Save time} & \textbf{Load time} \\ \hline
-\emph{default} & 162.48 MB & 17.19\% & 1.91 \si{\second} & 470 \si{\milli\second} \\
-\texttt{hc} & 77.33 MB & 8.18\% & 39.24 \si{\second} & 401 \si{\milli\second} \\
-\texttt{extreme} & 72.67 MB & 7.68\% & 4:30 & 406 \si{\milli\second} \\ \hline
-\texttt{zstd 1} & 63.17 MB & 6.68\% & 2.27 \si{\second} & 868 \si{\milli\second} \\
-\texttt{zstd 2} & 63.29 MB & 6.69\% & 2.31 \si{\second} & 884 \si{\milli\second} \\
-\texttt{zstd 3} & 62.94 MB & 6.65\% & 2.43 \si{\second} & 867 \si{\milli\second} \\
-\texttt{zstd 4} & 62.81 MB & 6.64\% & 2.44 \si{\second} & 855 \si{\milli\second} \\
-\texttt{zstd 5} & 61.04 MB & 6.45\% & 3.98 \si{\second} & 855 \si{\milli\second} \\
-\texttt{zstd 6} & 60.27 MB & 6.37\% & 4.19 \si{\second} & 827 \si{\milli\second} \\
-\texttt{zstd 7} & 61.53 MB & 6.5\% & 6.6 \si{\second} & 761 \si{\milli\second} \\
-\texttt{zstd 8} & 60.44 MB & 6.39\% & 7.84 \si{\second} & 746 \si{\milli\second} \\
-\texttt{zstd 9} & 59.58 MB & 6.3\% & 9.6 \si{\second} & 724 \si{\milli\second} \\
-\texttt{zstd 10} & 59.36 MB & 6.28\% & 10.29 \si{\second} & 706 \si{\milli\second} \\
-\texttt{zstd 11} & 59.2 MB & 6.26\% & 11.23 \si{\second} & 717 \si{\milli\second} \\
-\texttt{zstd 12} & 58.51 MB & 6.19\% & 15.43 \si{\second} & 695 \si{\milli\second} \\
-\texttt{zstd 13} & 56.16 MB & 5.94\% & 35.55 \si{\second} & 642 \si{\milli\second} \\
-\texttt{zstd 14} & 55.76 MB & 5.89\% & 37.74 \si{\second} & 627 \si{\milli\second} \\
-\texttt{zstd 15} & 54.65 MB & 5.78\% & 1:01 & 600 \si{\milli\second} \\
-\texttt{zstd 16} & 50.94 MB & 5.38\% & 1:34 & 537 \si{\milli\second} \\
-\texttt{zstd 17} & 50.18 MB & 5.30\% & 1:44 & 542 \si{\milli\second} \\
-\texttt{zstd 18} & 49.91 MB & 5.28\% & 2:17 & 554 \si{\milli\second} \\
-\texttt{zstd 19} & 46.99 MB & 4.97\% & 7:09 & 605 \si{\milli\second} \\
-\texttt{zstd 20} & 46.81 MB & 4.95\% & 7:08 & 608 \si{\milli\second} \\
-\texttt{zstd 21} & 45.77 MB & 4.84\% & 13:01 & 614 \si{\milli\second} \\
-\texttt{zstd 22} & 45.52 MB & 4.81\% & 15:11 & 621 \si{\milli\second}
+lz4 & 162.48 MB & 17.19\% & 1.91 \si{\second} & 470 \si{\milli\second} \\
+lz4 hc & 77.33 MB & 8.18\% & 39.24 \si{\second} & 401 \si{\milli\second} \\
+lz4 extreme & 72.67 MB & 7.68\% & 4:30 & 406 \si{\milli\second} \\ \hline
+zstd 1 & 63.17 MB & 6.68\% & 2.27 \si{\second} & 868 \si{\milli\second} \\
+zstd 2 & 63.29 MB & 6.69\% & 2.31 \si{\second} & 884 \si{\milli\second} \\
+zstd 3 & 62.94 MB & 6.65\% & 2.43 \si{\second} & 867 \si{\milli\second} \\
+zstd 4 & 62.81 MB & 6.64\% & 2.44 \si{\second} & 855 \si{\milli\second} \\
+zstd 5 & 61.04 MB & 6.45\% & 3.98 \si{\second} & 855 \si{\milli\second} \\
+zstd 6 & 60.27 MB & 6.37\% & 4.19 \si{\second} & 827 \si{\milli\second} \\
+zstd 7 & 61.53 MB & 6.5\% & 6.6 \si{\second} & 761 \si{\milli\second} \\
+zstd 8 & 60.44 MB & 6.39\% & 7.84 \si{\second} & 746 \si{\milli\second} \\
+zstd 9 & 59.58 MB & 6.3\% & 9.6 \si{\second} & 724 \si{\milli\second} \\
+zstd 10 & 59.36 MB & 6.28\% & 10.29 \si{\second} & 706 \si{\milli\second} \\
+zstd 11 & 59.2 MB & 6.26\% & 11.23 \si{\second} & 717 \si{\milli\second} \\
+zstd 12 & 58.51 MB & 6.19\% & 15.43 \si{\second} & 695 \si{\milli\second} \\
+zstd 13 & 56.16 MB & 5.94\% & 35.55 \si{\second} & 642 \si{\milli\second} \\
+zstd 14 & 55.76 MB & 5.89\% & 37.74 \si{\second} & 627 \si{\milli\second} \\
+zstd 15 & 54.65 MB & 5.78\% & 1:01 & 600 \si{\milli\second} \\
+zstd 16 & 50.94 MB & 5.38\% & 1:34 & 537 \si{\milli\second} \\
+zstd 17 & 50.18 MB & 5.30\% & 1:44 & 542 \si{\milli\second} \\
+zstd 18 & 49.91 MB & 5.28\% & 2:17 & 554 \si{\milli\second} \\
+zstd 19 & 46.99 MB & 4.97\% & 7:09 & 605 \si{\milli\second} \\
+zstd 20 & 46.81 MB & 4.95\% & 7:08 & 608 \si{\milli\second} \\
+zstd 21 & 45.77 MB & 4.84\% & 13:01 & 614 \si{\milli\second} \\
+zstd 22 & 45.52 MB & 4.81\% & 15:11 & 621 \si{\milli\second}
 \end{tabular}
 \caption{Compression results for an example trace. \\ Tests performed on Ryzen 9 3900X.}
 \label{compressiontimes}
 \end{table}
 
-\begin{figure}[h]
+\begin{figure}
 \begin{minipage}[c]{.475\textwidth}
 \begin{figure}[H]
 \centering\begin{tikzpicture}
@@ -2704,11 +2739,11 @@ The \texttt{update} utility supports optional higher levels of data compression,
 };
 \addlegendentry{zstd}
 \addplot[mark=o, blue] plot coordinates { (23, 162.48) };
-\addlegendentry{default}
+\addlegendentry{lz4}
 \addplot[mark=*, blue] plot coordinates { (24, 77.33) };
-\addlegendentry{hc}
+\addlegendentry{lz4 hc}
 \addplot[mark=triangle*, blue] plot coordinates { (25, 72.67) };
-\addlegendentry{extreme}
+\addlegendentry{lz4 extreme}
 \end{axis}
 \end{tikzpicture}
 \caption{Plot of trace sizes for different compression modes (see table~\ref{compressiontimes}).}
@@ -2725,11 +2760,11 @@ The \texttt{update} utility supports optional higher levels of data compression,
 };
 \addlegendentry{zstd}
 \addplot[mark=o, blue] plot coordinates { (23, 1.91) };
-\addlegendentry{default}
+\addlegendentry{lz4}
 \addplot[mark=*, blue] plot coordinates { (24, 39.24) };
-\addlegendentry{hc}
+\addlegendentry{lz4 hc}
 \addplot[mark=triangle*, blue] plot coordinates { (25, 270) };
-\addlegendentry{extreme}
+\addlegendentry{lz4 extreme}
 \end{semilogyaxis}
 \end{tikzpicture}
 \caption{Logarithmic plot of trace compression times for different compression modes (see table~\ref{compressiontimes}).}
@@ -2738,7 +2773,7 @@ The \texttt{update} utility supports optional higher levels of data compression,
 \end{minipage}
 \end{figure}
 
-\begin{figure}[H]
+\begin{figure}
 \centering\begin{tikzpicture}
 \begin{axis}[xlabel=Mode,ylabel=Time (ms), legend pos=south west, width=0.475\textwidth]
 \addplot[mark=x, red] plot coordinates {
@@ -2746,20 +2781,62 @@ The \texttt{update} utility supports optional higher levels of data compression,
 };
 \addlegendentry{zstd}
 \addplot[mark=o, blue] plot coordinates { (23, 470) };
-\addlegendentry{default}
+\addlegendentry{lz4}
 \addplot[mark=*, blue] plot coordinates { (24, 401) };
-\addlegendentry{hc}
+\addlegendentry{lz4 hc}
 \addplot[mark=triangle*, blue] plot coordinates { (25, 406) };
-\addlegendentry{extreme}
+\addlegendentry{lz4 extreme}
 \end{axis}
 \end{tikzpicture}
 \caption{Plot of trace load times for different compression modes (see table~\ref{compressiontimes}).}
 \label{loadtime}
 \end{figure}
 
-Trace files created using the \emph{default}, \emph{hc} and \emph{extreme} modes are optimized for fast decompression and can be further compressed using file compression utilities. For example, using 7-zip results in archives of the following sizes: 77.2 MB, 54.3 MB, 52.4 MB.
+Trace files created using the \emph{lz4}, \emph{lz4 hc} and \emph{lz4 extreme} modes are optimized for fast decompression and can be further compressed using file compression utilities. For example, using 7-zip results in archives of the following sizes: 77.2 MB, 54.3 MB, 52.4 MB.
 
 For archival purposes, it is, however, much better to use the \emph{zstd} compression modes, which are faster, compress trace files more tightly, and are directly loadable by the profiler, without the intermediate decompression step.
+
+\subsubsection{Compression streams}
+
+Saving and loading trace data can be parallelized using the \texttt{-j streams} parameter. Each compression stream runs on its own thread, and it makes little sense to use more streams than you have CPU cores. Note that the number of streams set at save time will also be used at load time, which may affect load performance if you are viewing the trace on a less powerful machine.
+
+Going overboard with the number of streams is not recommended, especially with the fast compression modes where it will be difficult to keep each stream busy. Also, complex compression codecs (e.g. zstd at level 22) have significantly worse compression rates when the work is divided. This is a fairly nuanced topic, and you are encouraged to do your own measurements, but for a rough guideline on the behavior, you can refer to tables~\ref{streamsize} and~\ref{streamspeedup}.
+
+\begin{table}
+	\centering
+    \begin{tabular}{c|c|c|c|c}
+		\diagbox[font=\footnotesize,width=5.25em,trim=lr]{\textbf{Mode}}{\textbf{Streams}} & \textbf{4} & \textbf{8} & \textbf{16} & \textbf{32} \\ \hline
+		lz4 & 100.30\% & 100.30\% & 100.61\% & 102.73\% \\
+		lz4 hc & 100.80\% & 101.20\% & 101.61\% & 102.41\% \\
+		lz4 ext & 100.40\% & 101.21\% & 101.62\% & 102.02\% \\ \hline
+		zstd 1 & 100.90\% & 101.36\% & 101.81\% & 102.26\% \\
+		zstd 3 & 100.51\% & 101.02\% & 101.53\% & 102.04\% \\
+		zstd 6 & 100.55\% & 101.10\% & 101.65\% & 102.75\% \\
+		zstd 9 & 101.27\% & 103.16\% & 105.06\% & 108.23\% \\
+		zstd 18 & 103.08\% & 106.15\% & 109.23\% & 115.38\% \\
+		zstd 22 & 107.08\% & 113.27\% & 122.12\% & 130.97\% \\
+	\end{tabular}
+	\caption{The increase in file size for different compression modes, as compared to a single stream.}
+	\label{streamsize}
+\end{table}
+
+\begin{table}
+	\centering
+	\begin{tabular}{c|c|c|c|c}
+        \diagbox[font=\footnotesize,width=5.25em,trim=lr]{\textbf{Mode}}{\textbf{Streams}} & \textbf{4} & \textbf{8} & \textbf{16} & \textbf{32} \\ \hline
+		lz4 & 2.04 & 2.52 & 2.11 & 3.24 \\
+		lz4 hc & 3.56 & 6.73 & 9.49 & 15.26 \\
+		lz4 ext & 3.38 & 6.53 & 9.57 & 17.03 \\ \hline
+		zstd 1 & 2.24 & 3.68 & 3.40 & 3.37 \\
+		zstd 3 & 3.23 & 4.13 & 4.07 & 4.50 \\
+		zstd 6 & 3.52 & 6.00 & 6.53 & 6.95 \\
+		zstd 9 & 3.10 & 4.26 & 5.12 & 5.40 \\
+		zstd 18 & 3.22 & 5.41 & 8.49 & 14.51 \\
+		zstd 22 & 3.99 & 7.47 & 11.10 & 18.20 \\
+	\end{tabular}
+	\caption{The speedup (\emph{x} times faster) in saving time for different modes of compression, as compared to a single stream.}
+	\label{streamspeedup}
+\end{table}
 
 \subsubsection{Frame images dictionary}
 \label{fidict}
@@ -3334,8 +3411,8 @@ Enabling the \emph{Ignore custom} option will force usage of the selected zone c
 Function names in the remaining places across the UI will be normalized unless this option is set to \emph{Disabled}.
 \end{itemize}
 \item \emph{\faLock{} Draw locks} -- Controls the display of locks. If the \emph{Only contended} option is selected, the profiler won't display the non-blocking regions of locks (see section~\ref{zoneslocksplots}). The \emph{Locks} drop-down allows disabling the display of locks on a per-lock basis. As a convenience, the list of locks is split into the single-threaded and multi-threaded (contended and uncontended) categories. Clicking the \RMB{}~right mouse button on a lock label opens the lock information window (section~\ref{lockwindow}).
-\item \emph{\faSignature{} Draw plots} -- Allows disabling display of plots. Individual plots can be disabled in the \emph{Plots} drop-down.
-\item \emph{\faRandom{} Visible threads} -- Here you can select which threads are visible on the timeline. You can change the display order of threads by dragging thread labels.
+\item \emph{\faSignature{} Draw plots} -- Allows disabling display of plots. Individual plots can be disabled in the \emph{Plots} drop-down. The vertical size of the plots can be adjusted using the \emph{Plot heights} slider.
+\item \emph{\faRandom{} Visible threads} -- Here you can select which threads are visible on the timeline. You can change the display order of threads by dragging thread labels. Threads can be sorted alphabetically with the \emph{Sort} button.
 \item \emph{\faImages{} Visible frame sets} -- Frame set display can be enabled or disabled here. Note that disabled frame sets are still available for selection in the frame set selection drop-down (section~\ref{controlmenu}) but are marked with a dimmed font.
 \end{itemize}
 
@@ -3735,6 +3812,8 @@ Let's say we have an Unix-based operating system with program sources in \texttt
 \item \texttt{\textbackslash{}\textbackslash{}} \hspace{1em}\textrightarrow\hspace{1em} \texttt{/}
 \end{itemize}
 \end{bclogo}
+
+By default, all source file modification times need to be older than the cature time of the trace. This can be disabled using the \emph{Enforce source file modification time older than trace capture time} check box, i.e. when the source files are under source control and the file modification time is not relevant.
 
 In this window, you can view the information about the machine on which the profiled application was running. This includes the operating system, used compiler, CPU name, total available RAM, etc. In addition, if application information was provided (see section~\ref{appinfo}), it will also be displayed here.
 

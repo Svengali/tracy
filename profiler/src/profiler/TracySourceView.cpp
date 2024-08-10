@@ -1219,25 +1219,44 @@ void SourceView::RenderSymbolView( Worker& worker, View& view )
     }
     ImGui::SameLine();
     ImGui::PopFont();
-    ImGui::AlignTextToFramePadding();
-    TextDisabledUnformatted( worker.GetString( sym->imageName ) );
-    ImGui::SameLine();
-    ImGui::TextDisabled( "0x%" PRIx64, m_baseAddr );
+
+    auto inlineList = worker.GetInlineSymbolList( m_baseAddr, m_codeLen );
+    const auto symEnd = m_baseAddr + m_codeLen;
+    if( inlineList )
+    {
+        auto it = inlineList;
+        while( *it < symEnd ) ++it;
+        const auto inlineCount = it - inlineList;
+        if( inlineCount > 0 )
+        {
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled( "(+%s inlined functions)", RealToString( inlineCount ) );
+        }
+        if( m_calcInlineStats )
+        {
+                ImGui::SameLine();
+                ImGui::AlignTextToFramePadding();
+                TextColoredUnformatted( ImVec4( 1.f, 1.f, 0.2f, 1.f ), ICON_FA_TRIANGLE_EXCLAMATION );
+                TooltipIfHovered( "Context is limited to an inline function" );
+        }
+    }
+
+    {
+        const auto imageName = worker.GetString( sym->imageName );
+        char tmp[1024];
+        snprintf( tmp, 1024, "%s 0x%" PRIx64, imageName, m_baseAddr );
+        ImGui::SameLine( ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize( tmp ).x - ImGui::GetStyle().FramePadding.x * 2 );
+        ImGui::AlignTextToFramePadding();
+        TextDisabledUnformatted( tmp );
+    }
 
     if( ImGui::IsKeyDown( ImGuiKey_Z ) ) m_childCalls = !m_childCalls;
     if( ImGui::IsKeyDown( ImGuiKey_X ) ) m_propagateInlines = !m_propagateInlines;
 
     const bool limitView = view.m_statRange.active;
-    auto inlineList = worker.GetInlineSymbolList( m_baseAddr, m_codeLen );
     if( inlineList )
     {
-        if( m_calcInlineStats )
-        {
-            ImGui::SameLine();
-            ImGui::AlignTextToFramePadding();
-            TextColoredUnformatted( ImVec4( 1.f, 1.f, 0.2f, 1.f ), ICON_FA_TRIANGLE_EXCLAMATION );
-            TooltipIfHovered( "Context is limited to an inline function" );
-        }
         if( SmallCheckbox( ICON_FA_SITEMAP " Function:", &m_calcInlineStats ) )
         {
             m_asmTarget.line = 0;
@@ -1250,7 +1269,6 @@ void SourceView::RenderSymbolView( Worker& worker, View& view )
         if( shortenName != ShortenName::Never ) currSymName = ShortenZoneName( ShortenName::OnlyNormalize, currSymName );
         if( ImGui::BeginCombo( "##functionList", currSymName, ImGuiComboFlags_HeightLarge ) )
         {
-            const auto symEnd = m_baseAddr + m_codeLen;
             unordered_flat_map<uint64_t, uint32_t> symStat;
             if( limitView )
             {
@@ -1699,14 +1717,14 @@ void SourceView::RenderSymbolView( Worker& worker, View& view )
     switch( m_displayMode )
     {
     case DisplaySource:
-        RenderSymbolSourceView( as, worker, view );
+        RenderSymbolSourceView( as, worker, view, inlineList != nullptr );
         break;
     case DisplayAsm:
         jumpOut = RenderSymbolAsmView( as, worker, view );
         break;
     case DisplayMixed:
         ImGui::Columns( 2 );
-        RenderSymbolSourceView( as, worker, view );
+        RenderSymbolSourceView( as, worker, view, inlineList != nullptr );
         ImGui::NextColumn();
         jumpOut = RenderSymbolAsmView( as, worker, view );
         ImGui::EndColumns();
@@ -1827,10 +1845,10 @@ static uint32_t GetGoodnessColor( float inRatio )
     return GoodnessColor[ratio];
 }
 
-void SourceView::RenderSymbolSourceView( const AddrStatData& as, Worker& worker, const View& view )
+void SourceView::RenderSymbolSourceView( const AddrStatData& as, Worker& worker, const View& view, bool hasInlines )
 {
     const auto scale = GetScale();
-    if( !m_calcInlineStats && ( as.ipTotalAsm.local + as.ipTotalAsm.ext ) > 0 || ( view.m_statRange.active && worker.GetSamplesForSymbol( m_baseAddr ) ) )
+    if( hasInlines && !m_calcInlineStats && ( as.ipTotalAsm.local + as.ipTotalAsm.ext ) > 0 || ( view.m_statRange.active && worker.GetSamplesForSymbol( m_baseAddr ) ) )
     {
         const auto samplesReady = worker.AreSymbolSamplesReady();
         if( !samplesReady )

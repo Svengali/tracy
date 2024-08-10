@@ -224,18 +224,18 @@ void View::DrawOptions()
     ImGui::PopStyleVar();
     ImGui::Unindent();
     m_vd.dynamicColors = ival;
-    ival = (int)m_shortenName;
+    ival = (int)m_vd.shortenName;
     ImGui::TextUnformatted( ICON_FA_RULER_HORIZONTAL " Zone name shortening" );
     ImGui::Indent();
     ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, ImVec2( 0, 0 ) );
-    ImGui::RadioButton( "Disabled", &ival, 0 );
-    ImGui::RadioButton( "Minimal length", &ival, 1 );
-    ImGui::RadioButton( "Only normalize", &ival, 2 );
-    ImGui::RadioButton( "As needed", &ival, 3 );
-    ImGui::RadioButton( "As needed + normalize", &ival, 4 );
+    ImGui::RadioButton( "Disabled", &ival, (uint8_t)ShortenName::Never );
+    ImGui::RadioButton( "Minimal length", &ival, (uint8_t)ShortenName::Always );
+    ImGui::RadioButton( "Only normalize", &ival, (uint8_t)ShortenName::OnlyNormalize );
+    ImGui::RadioButton( "As needed", &ival, (uint8_t)ShortenName::NoSpace );
+    ImGui::RadioButton( "As needed + normalize", &ival, (uint8_t)ShortenName::NoSpaceAndNormalize );
     ImGui::PopStyleVar();
     ImGui::Unindent();
-    m_shortenName = (ShortenName)ival;
+    m_vd.shortenName = (ShortenName)ival;
     ImGui::Unindent();
 
     if( !m_worker.GetLockMap().empty() )
@@ -541,6 +541,12 @@ void View::DrawOptions()
         val = m_vd.drawPlots;
         ImGui::Checkbox( ICON_FA_SIGNATURE " Draw plots", &val );
         m_vd.drawPlots = val;
+
+        ImGui::SameLine();
+        int pH = m_vd.plotHeight;
+        ImGui::SliderInt("Plot heights", &pH, 30, 200);
+        m_vd.plotHeight = pH;
+
         const auto expand = ImGui::TreeNode( "Plots" );
         ImGui::SameLine();
         ImGui::TextDisabled( "(%zu)", m_worker.GetPlots().size() );
@@ -598,6 +604,14 @@ void View::DrawOptions()
             {
                 m_tc.GetItem( t ).SetVisible( false );
             }
+        }
+        ImGui::SameLine();
+        if( ImGui::SmallButton( "Sort" ) )
+        {
+            std::sort( m_threadOrder.begin(), m_threadOrder.end(), [this] ( const auto& lhs, const auto& rhs ) {
+                if( lhs->groupHint != rhs->groupHint ) return lhs->groupHint < rhs->groupHint;
+                return strcmp( m_worker.GetThreadName( lhs->id ), m_worker.GetThreadName( rhs->id ) ) < 0;
+            } );
         }
 
         const auto wposx = ImGui::GetCursorScreenPos().x;
