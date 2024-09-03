@@ -148,6 +148,7 @@ public:
     struct CpuThreadTopology
     {
         uint32_t package;
+        uint32_t die;
         uint32_t core;
     };
 
@@ -392,7 +393,7 @@ private:
         bool ctxUsageReady = false;
 #endif
 
-        unordered_flat_map<uint32_t, unordered_flat_map<uint32_t, std::vector<uint32_t>>> cpuTopology;
+        unordered_flat_map<uint32_t, unordered_flat_map<uint32_t, unordered_flat_map<uint32_t, std::vector<uint32_t>>>> cpuTopology;
         unordered_flat_map<uint32_t, CpuThreadTopology> cpuTopologyMap;
 
         unordered_flat_map<uint64_t, MemoryBlock> symbolCode;
