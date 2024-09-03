@@ -20,19 +20,10 @@
 #include "TracySourceView.hpp"
 #include "TracyTexture.hpp"
 #include "TracyView.hpp"
+#include "../server/TracySysUtil.hpp"
 #include "../public/common/TracyStackFrames.hpp"
 
 #include "imgui_internal.h"
-
-#ifdef _WIN32
-#  include <windows.h>
-#elif defined __linux__
-#  include <sys/sysinfo.h>
-#elif defined __APPLE__ || defined BSD
-#  include <sys/types.h>
-#  include <sys/sysctl.h>
-#endif
-
 #include "IconsFontAwesome6.h"
 
 #ifndef M_PI_2
@@ -44,11 +35,12 @@ namespace tracy
 
 double s_time = 0;
 
-View::View( void(*cbMainThread)(const std::function<void()>&, bool), const char* addr, uint16_t port, ImFont* fixedWidth, ImFont* smallFont, ImFont* bigFont, SetTitleCallback stcb, SetScaleCallback sscb, AttentionCallback acb, const Config& config )
-    : m_worker( addr, port )
+View::View( void(*cbMainThread)(const std::function<void()>&, bool), const char* addr, uint16_t port, ImFont* fixedWidth, ImFont* smallFont, ImFont* bigFont, SetTitleCallback stcb, SetScaleCallback sscb, AttentionCallback acb, const Config& config, AchievementsMgr* amgr )
+    : m_worker( addr, port, config.memoryLimit == 0 ? -1 : ( config.memoryLimitPercent * tracy::GetPhysicalMemorySize() / 100 ) )
     , m_staticView( false )
     , m_viewMode( ViewMode::LastFrames )
     , m_viewModeHeuristicTry( true )
+    , m_totalMemory( GetPhysicalMemorySize() )
     , m_forceConnectionPopup( true, true )
     , m_tc( *this, m_worker, config.threadedRendering )
     , m_frames( nullptr )
@@ -61,20 +53,20 @@ View::View( void(*cbMainThread)(const std::function<void()>&, bool), const char*
     , m_stcb( stcb )
     , m_sscb( sscb )
     , m_acb( acb )
-    , m_userData()
     , m_cbMainThread( cbMainThread )
+    , m_achievementsMgr( amgr )
+    , m_achievements( config.achievements )
 {
-    InitMemory();
     InitTextEditor();
-
-    m_vd.frameTarget = config.targetFps;
+    SetupConfig( config );
 }
 
-View::View( void(*cbMainThread)(const std::function<void()>&, bool), FileRead& f, ImFont* fixedWidth, ImFont* smallFont, ImFont* bigFont, SetTitleCallback stcb, SetScaleCallback sscb, AttentionCallback acb, const Config& config )
+View::View( void(*cbMainThread)(const std::function<void()>&, bool), FileRead& f, ImFont* fixedWidth, ImFont* smallFont, ImFont* bigFont, SetTitleCallback stcb, SetScaleCallback sscb, AttentionCallback acb, const Config& config, AchievementsMgr* amgr )
     : m_worker( f )
     , m_filename( f.GetFilename() )
     , m_staticView( true )
     , m_viewMode( ViewMode::Paused )
+    , m_totalMemory( GetPhysicalMemorySize() )
     , m_tc( *this, m_worker, config.threadedRendering )
     , m_frames( m_worker.GetFramesBase() )
     , m_messagesScrollBottom( false )
@@ -86,12 +78,15 @@ View::View( void(*cbMainThread)(const std::function<void()>&, bool), FileRead& f
     , m_acb( acb )
     , m_userData( m_worker.GetCaptureProgram().c_str(), m_worker.GetCaptureTime() )
     , m_cbMainThread( cbMainThread )
+    , m_achievementsMgr( amgr )
+    , m_achievements( config.achievements )
 {
     m_notificationTime = 4;
     m_notificationText = std::string( "Trace loaded in " ) + TimeToString( m_worker.GetLoadTime() );
 
-    InitMemory();
     InitTextEditor();
+    SetupConfig( config );
+
     m_vd.zvStart = m_worker.GetFirstTime();
     m_vd.zvEnd = m_worker.GetLastTime();
     m_userData.StateShouldBePreserved();
@@ -102,7 +97,7 @@ View::View( void(*cbMainThread)(const std::function<void()>&, bool), FileRead& f
     if( m_worker.GetCallstackFrameCount() == 0 ) m_showUnknownFrames = false;
     if( m_worker.GetCallstackSampleCount() == 0 ) m_showAllSymbols = true;
 
-    m_vd.frameTarget = config.targetFps;
+    Achieve( "loadTrace" );
 }
 
 View::~View()
@@ -120,36 +115,24 @@ View::~View()
     if( m_playback.texture ) FreeTexture( m_playback.texture, m_cbMainThread );
 }
 
-void View::InitMemory()
-{
-#ifdef _WIN32
-    MEMORYSTATUSEX statex;
-    statex.dwLength = sizeof( statex );
-    GlobalMemoryStatusEx( &statex );
-    m_totalMemory = statex.ullTotalPhys;
-#elif defined __linux__
-    struct sysinfo sysInfo;
-    sysinfo( &sysInfo );
-    m_totalMemory = sysInfo.totalram;
-#elif defined __APPLE__
-    size_t memSize;
-    size_t sz = sizeof( memSize );
-    sysctlbyname( "hw.memsize", &memSize, &sz, nullptr, 0 );
-    m_totalMemory = memSize;
-#elif defined BSD
-    size_t memSize;
-    size_t sz = sizeof( memSize );
-    sysctlbyname( "hw.physmem", &memSize, &sz, nullptr, 0 );
-    m_totalMemory = memSize;
-#else
-    m_totalMemory = 0;
-#endif
-}
-
 void View::InitTextEditor()
 {
     m_sourceView = std::make_unique<SourceView>();
     m_sourceViewFile = nullptr;
+}
+
+void View::SetupConfig( const Config& config )
+{
+    m_vd.frameTarget = config.targetFps;
+    m_vd.dynamicColors = config.dynamicColors;
+    m_vd.forceColors = config.forceColors;
+    m_vd.shortenName = (ShortenName)config.shortenName;
+}
+
+void View::Achieve( const char* id )
+{
+    if( !m_achievements || !m_achievementsMgr ) return;
+    m_achievementsMgr->Achieve( id );
 }
 
 void View::ViewSource( const char* fileName, int line )
@@ -586,8 +569,8 @@ bool View::Draw()
         ImGui::PopFont();
         ImGui::Separator();
 
-        static FileWrite::Compression comp = FileWrite::Compression::Fast;
-        static int zlvl = 6;
+        static FileCompression comp = FileCompression::Zstd;
+        static int zlvl = 3;
         ImGui::TextUnformatted( ICON_FA_FILE_ZIPPER " Trace compression" );
         ImGui::SameLine();
         TextDisabledUnformatted( "Can be changed later with the upgrade utility" );
@@ -595,7 +578,7 @@ bool View::Draw()
         int idx = 0;
         while( CompressionName[idx] )
         {
-            if( ImGui::RadioButton( CompressionName[idx], (int)comp == idx ) ) comp = (FileWrite::Compression)idx;
+            if( ImGui::RadioButton( CompressionName[idx], (int)comp == idx ) ) comp = (FileCompression)idx;
             ImGui::SameLine();
             TextDisabledUnformatted( CompressionDesc[idx] );
             idx++;
@@ -607,8 +590,16 @@ bool View::Draw()
         ImGui::Indent();
         if( ImGui::SliderInt( "##zstd", &zlvl, 1, 22, "%d", ImGuiSliderFlags_AlwaysClamp ) )
         {
-            comp = FileWrite::Compression::Zstd;
+            comp = FileCompression::Zstd;
         }
+        ImGui::Unindent();
+
+        static int streams = 4;
+        ImGui::TextUnformatted( ICON_FA_SHUFFLE " Compression streams" );
+        ImGui::SameLine();
+        TextDisabledUnformatted( "Parallelize save and load at the cost of file size" );
+        ImGui::Indent();
+        ImGui::SliderInt( "##streams", &streams, 1, 64, "%d", ImGuiSliderFlags_AlwaysClamp );
         ImGui::Unindent();
 
         static bool buildDict = false;
@@ -623,9 +614,10 @@ bool View::Draw()
         ImGui::Separator();
         if( ImGui::Button( ICON_FA_FLOPPY_DISK " Save trace" ) )
         {
-            saveFailed = !Save( fn, comp, zlvl, buildDict );
+            saveFailed = !Save( fn, comp, zlvl, buildDict, streams );
             m_filenameStaging.clear();
             ImGui::CloseCurrentPopup();
+            Achieve( "saveTrace" );
         }
         ImGui::SameLine();
         if( ImGui::Button( "Cancel" ) )
@@ -687,6 +679,15 @@ bool View::DrawImpl()
         return keepOpen;
     }
 
+    if( m_achievements )
+    {
+        if( m_worker.IsConnected() ) Achieve( "connectToClient" );
+        if( m_worker.GetZoneCount() > 0 ) Achieve( "instrumentationIntro" );
+        if( m_worker.GetZoneCount() > 100 * 1000 * 1000 ) Achieve( "100million" );
+        if( m_worker.GetCallstackSampleCount() > 0 ) Achieve( "samplingIntro" );
+        if( m_worker.AreFramesUsed() ) Achieve( "instrumentFrames" );
+    }
+
     Attention( m_attnWorking );
 
     if( !m_uarchSet )
@@ -706,6 +707,17 @@ bool View::DrawImpl()
         sprintf( buf, "Trace size %s (%.2f%% ratio)", MemSizeToString( dst ), 100.f * dst / src );
         m_notificationText = buf;
         m_acb();
+    }
+
+    auto& threadHints = m_worker.GetPendingThreadHints();
+    if( !threadHints.empty() )
+    {
+        for( auto v : threadHints )
+        {
+            auto it = std::find_if( m_threadOrder.begin(), m_threadOrder.end(), [v]( const auto& t ) { return t->id == v; } );
+            if( it != m_threadOrder.end() ) m_threadOrder.erase( it );      // Will be added in the correct place later, like any newly appearing thread
+        }
+        m_worker.ClearPendingThreadHints();
     }
 
     const auto& io = ImGui::GetIO();
@@ -976,8 +988,8 @@ bool View::DrawImpl()
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
-        const auto targetLabelSize = ImGui::CalcTextSize( "WWWWWWW" ).x;
 
+        auto targetLabelSize = ImGui::CalcTextSize( ICON_FA_EYE " 12345.67 ms" ).x;
         auto cx = ImGui::GetCursorPosX();
         ImGui::Text( ICON_FA_EYE " %s", TimeToString( m_vd.zvEnd - m_vd.zvStart ) );
         TooltipIfHovered( "View span" );
@@ -1010,13 +1022,15 @@ bool View::DrawImpl()
         dx = ImGui::GetCursorPosX() - cx;
         if( dx < targetLabelSize ) ImGui::SameLine( cx + targetLabelSize );
 
+        targetLabelSize = ImGui::CalcTextSize( ICON_FA_MEMORY " 1234.56 MB (123.45 %%)" ).x;
         cx = ImGui::GetCursorPosX();
-        ImGui::Text( ICON_FA_MEMORY " %s", MemSizeToString( memUsage ) );
+        const auto mem = memUsage.load( std::memory_order_relaxed );
+        ImGui::Text( ICON_FA_MEMORY " %s", MemSizeToString( mem ) );
         TooltipIfHovered( "Profiler memory usage" );
         if( m_totalMemory != 0 )
         {
             ImGui::SameLine();
-            const auto memUse = float( memUsage ) / m_totalMemory * 100;
+            const auto memUse = float( mem ) / m_totalMemory * 100;
             if( memUse < 80 )
             {
                 ImGui::TextDisabled( "(%.2f%%)", memUse );
@@ -1030,6 +1044,26 @@ bool View::DrawImpl()
         dx = ImGui::GetCursorPosX() - cx;
         if( dx < targetLabelSize ) ImGui::SameLine( cx + targetLabelSize );
         ImGui::Spacing();
+
+        const auto memoryLimit = m_worker.GetMemoryLimit();
+        if( memoryLimit > 0 )
+        {
+            ImGui::SameLine();
+            if( memUsage.load( std::memory_order_relaxed ) > memoryLimit )
+            {
+                TextColoredUnformatted( 0xFF2222FF, ICON_FA_TRIANGLE_EXCLAMATION );
+            }
+            else
+            {
+                TextColoredUnformatted( 0xFF00FFFF, ICON_FA_TRIANGLE_EXCLAMATION );
+            }
+            if( ImGui::IsItemHovered() )
+            {
+                ImGui::BeginTooltip();
+                ImGui::Text( "Memory limit: %s", MemSizeToString( memoryLimit ) );
+                ImGui::EndTooltip();
+            }
+        }
     }
     DrawNotificationArea();
 
@@ -1353,9 +1387,9 @@ void View::DrawSourceTooltip( const char* filename, uint32_t srcline, int before
     ImGui::PopStyleVar();
 }
 
-bool View::Save( const char* fn, FileWrite::Compression comp, int zlevel, bool buildDict )
+bool View::Save( const char* fn, FileCompression comp, int zlevel, bool buildDict, int streams )
 {
-    std::unique_ptr<FileWrite> f( FileWrite::Open( fn, comp, zlevel ) );
+    std::unique_ptr<FileWrite> f( FileWrite::Open( fn, comp, zlevel, streams ) );
     if( !f ) return false;
 
     m_userData.StateShouldBePreserved();

@@ -326,6 +326,8 @@ void View::DrawFindZone()
 
     if( !m_findZone.match.empty() )
     {
+        Achieve( "findZone" );
+
         const auto rangeMin = m_findZone.range.min;
         const auto rangeMax = m_findZone.range.max;
 
@@ -1702,7 +1704,7 @@ void View::DrawFindZone()
                                     TextDisabledUnformatted( ICON_FA_CARET_RIGHT );
                                 }
                                 ImGui::SameLine();
-                                if( m_shortenName == ShortenName::Never )
+                                if( m_vd.shortenName == ShortenName::Never )
                                 {
                                     ImGui::TextUnformatted( txt );
                                 }
