@@ -30,6 +30,7 @@
 
 #include "../../public/common/TracyProtocol.hpp"
 #include "../../public/common/TracyVersion.hpp"
+#include "profiler/TracyAchievements.hpp"
 #include "profiler/TracyBadVersion.hpp"
 #include "profiler/TracyConfig.hpp"
 #include "profiler/TracyFileselector.hpp"
@@ -46,6 +47,7 @@
 #include "../../server/TracyFileHeader.hpp"
 #include "../../server/TracyFileRead.hpp"
 #include "../../server/TracyPrint.hpp"
+#include "../../server/TracySysUtil.hpp"
 #include "../../server/TracyWorker.hpp"
 
 #include "icon.hpp"
@@ -116,7 +118,16 @@ void* zigzagTex;
 static Backend* bptr;
 static bool s_customTitle = false;
 static bool s_isElevated = false;
+static size_t s_totalMem = tracy::GetPhysicalMemorySize();
 tracy::Config s_config;
+tracy::AchievementsMgr* s_achievements;
+static const tracy::data::AchievementItem* s_achievementItem = nullptr;
+static bool s_switchAchievementCategory = false;
+
+static float smoothstep( float x )
+{
+    return x * x * ( 3.0f - 2.0f * x );
+}
 
 static void SetWindowTitleCallback( const char* title )
 {
@@ -213,6 +224,13 @@ static void LoadConfig()
     if( ini_sget( ini, "core", "threadedRendering", "%d", &v ) ) s_config.threadedRendering = v;
     if( ini_sget( ini, "core", "focusLostLimit", "%d", &v ) ) s_config.focusLostLimit = v;
     if( ini_sget( ini, "timeline", "targetFps", "%d", &v ) && v >= 1 && v < 10000 ) s_config.targetFps = v;
+    if( ini_sget( ini, "timeline", "dynamicColors", "%d", &v ) ) s_config.dynamicColors = v;
+    if( ini_sget( ini, "timeline", "forceColors", "%d", &v ) ) s_config.forceColors = v;
+    if( ini_sget( ini, "timeline", "shortenName", "%d", &v ) ) s_config.shortenName = v;
+    if( ini_sget( ini, "memory", "limit", "%d", &v ) ) s_config.memoryLimit = v;
+    if( ini_sget( ini, "memory", "percent", "%d", &v ) && v >= 1 && v < 1000 ) s_config.memoryLimitPercent = v;
+    if( ini_sget( ini, "achievements", "enabled", "%d", &v ) ) s_config.achievements = v;
+    if( ini_sget( ini, "achievements", "asked", "%d", &v ) ) s_config.achievementsAsked = v;
 
     ini_free( ini );
 }
@@ -229,6 +247,17 @@ static bool SaveConfig()
 
     fprintf( f, "\n[timeline]\n" );
     fprintf( f, "targetFps = %i\n", s_config.targetFps );
+    fprintf( f, "dynamicColors = %i\n", s_config.dynamicColors );
+    fprintf( f, "forceColors = %i\n", (int)s_config.forceColors );
+    fprintf( f, "shortenName = %i\n", s_config.shortenName );
+
+    fprintf( f, "\n[memory]\n" );
+    fprintf( f, "limit = %i\n", (int)s_config.memoryLimit );
+    fprintf( f, "percent = %i\n", s_config.memoryLimitPercent );
+
+    fprintf( f, "\n[achievements]\n" );
+    fprintf( f, "enabled = %i\n", (int)s_config.achievements );
+    fprintf( f, "asked = %i\n", (int)s_config.achievementsAsked );
 
     fclose( f );
     return true;
@@ -312,9 +341,11 @@ int main( int argc, char** argv )
 
     ConnectionHistory connHistory;
     Filters filters;
+    tracy::AchievementsMgr achievements;
 
     connHist = &connHistory;
     filt = &filters;
+    s_achievements = &achievements;
 
 #ifndef __EMSCRIPTEN__
     updateThread = std::thread( [] {
@@ -363,6 +394,8 @@ int main( int argc, char** argv )
         }
     }
 
+    s_achievements->Achieve( "achievementsIntro" );
+
     SetupDPIScale();
 
     tracy::UpdateTextureRGBAMips( zigzagTex, (void**)zigzagPx, zigzagX, zigzagY, 6 );
@@ -370,12 +403,12 @@ int main( int argc, char** argv )
 
     if( initFileOpen )
     {
-        view = std::make_unique<tracy::View>( RunOnMainThread, *initFileOpen, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config );
+        view = std::make_unique<tracy::View>( RunOnMainThread, *initFileOpen, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config, s_achievements );
         initFileOpen.reset();
     }
     else if( connectTo )
     {
-        view = std::make_unique<tracy::View>( RunOnMainThread, connectTo, port, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config );
+        view = std::make_unique<tracy::View>( RunOnMainThread, connectTo, port, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config, s_achievements );
     }
 
     tracy::Fileselector::Init();
@@ -553,6 +586,45 @@ static void TextComment( const char* str )
     ImGui::PopFont();
 }
 
+static void DrawAchievements( tracy::data::AchievementItem** items )
+{
+    while( *items )
+    {
+        auto& it = *items++;
+        if( it->unlockTime > 0 )
+        {
+            if( it->doneTime > 0 ) ImGui::PushStyleColor( ImGuiCol_Text, GImGui->Style.Colors[ImGuiCol_TextDisabled] );
+            bool isSelected = s_achievementItem == it;
+            if( isSelected )
+            {
+                if( !it->hideNew ) it->hideNew = true;
+                if( !it->hideCompleted && it->doneTime > 0 ) it->hideCompleted = true;
+            }
+            if( ImGui::Selectable( it->name, isSelected ) )
+            {
+                s_achievementItem = it;
+            }
+            if( it->doneTime > 0 ) ImGui::PopStyleColor();
+            if( !it->hideNew )
+            {
+                ImGui::SameLine();
+                tracy::TextColoredUnformatted( 0xFF4488FF, ICON_FA_CIRCLE_EXCLAMATION );
+            }
+            if( !it->hideCompleted && it->doneTime > 0 )
+            {
+                ImGui::SameLine();
+                tracy::TextColoredUnformatted( 0xFF44FF44, ICON_FA_CIRCLE_CHECK );
+            }
+            if( it->items )
+            {
+                ImGui::Indent();
+                DrawAchievements( it->items );
+                ImGui::Unindent();
+            }
+        }
+    }
+}
+
 static void DrawContents()
 {
     static bool reconnect = false;
@@ -567,8 +639,10 @@ static void DrawContents()
     int display_w, display_h;
     bptr->NewFrame( display_w, display_h );
 
+    const bool achievementsAttention = s_config.achievements ? s_achievements->NeedsAttention() : false;
+
     static int activeFrames = 3;
-    if( tracy::WasActive() || !clients.empty() || ( view && view->WasActive() ) )
+    if( tracy::WasActive() || !clients.empty() || ( view && view->WasActive() ) || achievementsAttention )
     {
         activeFrames = 3;
     }
@@ -649,7 +723,10 @@ static void DrawContents()
             ImGui::Separator();
             if( ImGui::TreeNode( ICON_FA_TOOLBOX " Global settings" ) )
             {
+                s_achievements->Achieve( "globalSettings" );
+
                 ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, ImVec2( 0, 0 ) );
+
                 ImGui::TextUnformatted( "Threaded rendering" );
                 ImGui::Indent();
                 if( ImGui::RadioButton( "Enabled", s_config.threadedRendering ) ) { s_config.threadedRendering = true; SaveConfig(); }
@@ -666,9 +743,62 @@ static void DrawContents()
                 ImGui::Spacing();
                 ImGui::TextUnformatted( "Target FPS" );
                 ImGui::SameLine();
+                tracy::DrawHelpMarker( "The default target frame rate for your application. Frames displayed in the frame time graph will be colored accordingly if they are within the target frame rate. This can be adjusted later for each individual trace." );
+                ImGui::SameLine();
                 int tmp = s_config.targetFps;
                 ImGui::SetNextItemWidth( 90 * dpiScale );
                 if( ImGui::InputInt( "##targetfps", &tmp ) ) { s_config.targetFps = std::clamp( tmp, 1, 9999 ); SaveConfig(); }
+
+                ImGui::Spacing();
+                ImGui::TextUnformatted( ICON_FA_PALETTE " Zone colors" );
+                ImGui::SameLine();
+                tracy::SmallCheckbox( "Ignore custom", &s_config.forceColors );
+                ImGui::Indent();
+                ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, ImVec2( 0, 0 ) );
+                ImGui::RadioButton( "Static", &s_config.dynamicColors, 0 );
+                ImGui::RadioButton( "Thread dynamic", &s_config.dynamicColors, 1 );
+                ImGui::RadioButton( "Source location dynamic", &s_config.dynamicColors, 2 );
+                ImGui::PopStyleVar();
+                ImGui::Unindent();
+                ImGui::TextUnformatted( ICON_FA_RULER_HORIZONTAL " Zone name shortening" );
+                ImGui::Indent();
+                ImGui::PushStyleVar( ImGuiStyleVar_FramePadding, ImVec2( 0, 0 ) );
+                ImGui::RadioButton( "Disabled", &s_config.shortenName, (uint8_t)tracy::ShortenName::Never );
+                ImGui::RadioButton( "Minimal length", &s_config.shortenName, (uint8_t)tracy::ShortenName::Always );
+                ImGui::RadioButton( "Only normalize", &s_config.shortenName, (uint8_t)tracy::ShortenName::OnlyNormalize );
+                ImGui::RadioButton( "As needed", &s_config.shortenName, (uint8_t)tracy::ShortenName::NoSpace );
+                ImGui::RadioButton( "As needed + normalize", &s_config.shortenName, (uint8_t)tracy::ShortenName::NoSpaceAndNormalize );
+                ImGui::PopStyleVar();
+                ImGui::Unindent();
+
+                if( s_totalMem == 0 )
+                {
+                    ImGui::BeginDisabled();
+                    s_config.memoryLimit = false;
+                }
+
+                ImGui::Spacing();
+                if( ImGui::Checkbox( "Memory limit", &s_config.memoryLimit ) ) SaveConfig();
+                ImGui::SameLine();
+                tracy::DrawHelpMarker( "When enabled, profiler will stop recording data when memory usage exceeds the specified percentage of available memory. Values greater than 100% will rely on swap. You need to make sure that memory is actually available." );
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth( 70 * dpiScale );
+                if( ImGui::InputInt( "##memorylimit", &s_config.memoryLimitPercent ) ) { s_config.memoryLimitPercent = std::clamp( s_config.memoryLimitPercent, 1, 999 ); SaveConfig(); }
+                ImGui::SameLine();
+                ImGui::TextUnformatted( "%" );
+                if( s_totalMem != 0 )
+                {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled( "(%s)", tracy::MemSizeToString( s_totalMem * s_config.memoryLimitPercent / 100 ) );
+                }
+                else
+                {
+                    ImGui::EndDisabled();
+                }
+
+                ImGui::Spacing();
+                if( ImGui::Checkbox( "Enable achievements", &s_config.achievements ) ) SaveConfig();
+
                 ImGui::PopStyleVar();
                 ImGui::TreePop();
             }
@@ -828,12 +958,18 @@ static void DrawContents()
             {
                 std::string addrPart = std::string( addr, ptr );
                 uint16_t portPart = (uint16_t)atoi( ptr+1 );
-                view = std::make_unique<tracy::View>( RunOnMainThread, addrPart.c_str(), portPart, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config );
+                view = std::make_unique<tracy::View>( RunOnMainThread, addrPart.c_str(), portPart, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config, s_achievements );
             }
             else
             {
-                view = std::make_unique<tracy::View>( RunOnMainThread, addr, port, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config );
+                view = std::make_unique<tracy::View>( RunOnMainThread, addr, port, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config, s_achievements );
             }
+        }
+        if( s_config.memoryLimit )
+        {
+            ImGui::SameLine();
+            tracy::TextColoredUnformatted( 0xFF00FFFF, ICON_FA_TRIANGLE_EXCLAMATION );
+            tracy::TooltipIfHovered( "Memory limit is active" );
         }
         ImGui::SameLine( 0, ImGui::GetTextLineHeight() * 2 );
 
@@ -849,7 +985,7 @@ static void DrawContents()
                         loadThread = std::thread( [f] {
                             try
                             {
-                                view = std::make_unique<tracy::View>( RunOnMainThread, *f, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config );
+                                view = std::make_unique<tracy::View>( RunOnMainThread, *f, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config, s_achievements );
                             }
                             catch( const tracy::UnsupportedVersion& e )
                             {
@@ -982,7 +1118,7 @@ static void DrawContents()
                 }
                 if( selected && !loadThread.joinable() )
                 {
-                    view = std::make_unique<tracy::View>( RunOnMainThread, v.second.address.c_str(), v.second.port, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config );
+                    view = std::make_unique<tracy::View>( RunOnMainThread, v.second.address.c_str(), v.second.port, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config, s_achievements );
                 }
                 ImGui::NextColumn();
                 const auto acttime = ( v.second.activeTime + ( time - v.second.time ) / 1000 ) * 1000000000ll;
@@ -1151,7 +1287,7 @@ static void DrawContents()
         viewShutdown.store( ViewShutdown::False, std::memory_order_relaxed );
         if( reconnect )
         {
-            view = std::make_unique<tracy::View>( RunOnMainThread, reconnectAddr.c_str(), reconnectPort, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config );
+            view = std::make_unique<tracy::View>( RunOnMainThread, reconnectAddr.c_str(), reconnectPort, s_fixedWidth, s_smallFont, s_bigFont, SetWindowTitleCallback, SetupScaleCallback, AttentionCallback, s_config, s_achievements );
         }
         break;
     default:
@@ -1177,6 +1313,210 @@ static void DrawContents()
         ImGui::Separator();
         if( ImGui::Button( "Ok" ) ) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
+    }
+
+#ifndef __EMSCRIPTEN__
+    if( !s_config.achievementsAsked )
+    {
+        s_config.achievementsAsked = true;
+        ImGui::OpenPopup( ICON_FA_STAR " Achievements" );
+    }
+#endif
+
+    if( ImGui::BeginPopupModal( ICON_FA_STAR " Achievements", nullptr, ImGuiWindowFlags_AlwaysAutoResize ) )
+    {
+        ImGui::TextUnformatted( "Tracy Profiler is a complex tool with many features. It" );
+        ImGui::TextUnformatted( "can be difficult to discover all of them on your own." );
+        ImGui::TextUnformatted( "The Achievements system will guide you through the" );
+        ImGui::TextUnformatted( "main features and teach you how to use them in an" );
+        ImGui::TextUnformatted( "easy-to-handle manner." );
+        ImGui::Separator();
+        ImGui::TextUnformatted( "Would you like to enable achievements?" );
+        ImGui::PushFont( s_smallFont );
+        tracy::TextDisabledUnformatted( "You can change this setting later in the global settings." );
+        ImGui::PopFont();
+        ImGui::Separator();
+        if( ImGui::Button( "Yes" ) )
+        {
+            s_config.achievements = true;
+            SaveConfig();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if( ImGui::Button( "No" ) )
+        {
+            s_config.achievements = false;
+            SaveConfig();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if( s_config.achievements )
+    {
+        ImGui::PushStyleVar( ImGuiStyleVar_WindowRounding, 16 * dpiScale );
+
+        ImGui::PushFont( s_bigFont );
+        const auto starSize = ImGui::CalcTextSize( ICON_FA_STAR );
+        ImGui::PopFont();
+
+        static int animStage = 0;
+        static float animProgress = 0;
+        static bool showAchievements = false;
+        static float openTimeLeft = 0;
+
+        float aSize = 0;
+        const auto aItem = s_achievements->GetNextQueue();
+
+        if( aItem )
+        {
+            aSize = ImGui::CalcTextSize( aItem->name ).x + ImGui::GetStyle().ItemSpacing.x + ImGui::GetStyle().WindowPadding.x * 0.5f;
+            if( animStage == 0 )
+            {
+                animStage = 1;
+            }
+        }
+
+        if( animStage > 0 )
+        {
+            tracy::s_wasActive = true;
+
+            if( animStage == 1 )
+            {
+                animProgress = std::min( animProgress + ImGui::GetIO().DeltaTime / 0.3f, 1.f );
+                if( animProgress == 1 )
+                {
+                    animStage = 2;
+                    openTimeLeft = 8;
+                }
+                tracy::s_wasActive = true;
+            }
+            else if( animStage == 3 )
+            {
+                animProgress = std::max( animProgress - ImGui::GetIO().DeltaTime / 0.3f, 0.f );
+                if( animProgress == 0 )
+                {
+                    s_achievements->PopQueue();
+                    animStage = 0;
+                }
+            }
+        }
+
+        ImGui::SetNextWindowPos( ImVec2( display_w - starSize.x - ImGui::GetStyle().WindowPadding.x * 1.5f - aSize * smoothstep( animProgress ), display_h - starSize.y * 2 - ImGui::GetStyle().WindowPadding.y * 2 ) );
+        ImGui::SetNextWindowSize( ImVec2( starSize.x + aSize + 100, starSize.y + ImGui::GetStyle().WindowPadding.y * 2 ) );
+        ImGui::Begin( "###achievements", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_Tooltip );
+
+        const auto cursor = ImGui::GetCursorPos();
+        const auto cursorScreen = ImGui::GetCursorScreenPos();
+        uint32_t color = 0xFF888888;
+        if( achievementsAttention && !showAchievements )
+        {
+            const auto t = sin( ImGui::GetTime() * 4 ) * 0.5f + 0.5f;
+            const auto c0 = uint32_t( std::lerp( 0x88, 0x00, t ) );
+            const auto c1 = uint32_t( std::lerp( 0x88, 0xFF, t ) );
+            color = 0xFF000000 | ( c0 << 16 ) | ( c1 << 8 ) | c1;
+        }
+        if( ( animStage == 0 || animStage == 2 ) && ImGui::IsMouseHoveringRect( cursorScreen - ImVec2( dpiScale * 2, dpiScale * 2 ), cursorScreen + starSize + ImVec2( dpiScale * 4, dpiScale * 4 ) ) )
+        {
+            color = 0xFFFFFFFF;
+            if( ImGui::IsMouseClicked( 0 ) )
+            {
+                if( animStage == 0 )
+                {
+                    showAchievements = !showAchievements;
+                }
+                else
+                {
+                    showAchievements = true;
+                    animStage = 3;
+                    s_achievementItem = aItem;
+                }
+            }
+        }
+        ImGui::PushFont( s_bigFont );
+        tracy::TextColoredUnformatted( color, ICON_FA_STAR );
+        ImGui::PopFont();
+
+        if( aItem )
+        {
+            ImGui::SameLine();
+            const auto dismiss = ImGui::GetCursorScreenPos();
+            const auto th = ImGui::GetTextLineHeight();
+            ImGui::SetCursorPosY( cursor.y - th * 0.175f );
+            ImGui::TextUnformatted( aItem->name );
+            ImGui::PushFont( s_smallFont );
+            ImGui::SetCursorPos( cursor + ImVec2( starSize.x + ImGui::GetStyle().ItemSpacing.x, th ) );
+            tracy::TextDisabledUnformatted( "Click to open" );
+            ImGui::PopFont();
+            if( animStage == 2 )
+            {
+                if( ImGui::IsMouseHoveringRect( dismiss - ImVec2( 0, dpiScale * 6 ), dismiss + ImVec2( aSize, th * 1.5f + dpiScale * 4 ) ) && ImGui::IsMouseClicked( 0 ) )
+                {
+                    s_achievementItem = aItem;
+                    s_switchAchievementCategory = true;
+                    showAchievements = true;
+                    animStage = 3;
+                }
+                if( !aItem->keepOpen )
+                {
+                    openTimeLeft -= ImGui::GetIO().DeltaTime;
+                    if( openTimeLeft < 0 ) animStage = 3;
+                }
+            }
+        }
+
+        ImGui::End();
+        ImGui::PopStyleVar();
+
+        if( showAchievements )
+        {
+            const tracy::data::AchievementCategory* targetCategory = nullptr;
+            if( s_switchAchievementCategory )
+            {
+                s_switchAchievementCategory = false;
+                assert( s_achievementItem );
+                targetCategory = s_achievements->GetCategoryForAchievement( s_achievementItem->id );
+            }
+
+            ImGui::SetNextWindowSize( ImVec2( 700 * dpiScale, 450 * dpiScale ), ImGuiCond_FirstUseEver );
+            ImGui::Begin( "Achievements List", &showAchievements, ImGuiWindowFlags_NoDocking );
+            ImGui::BeginTabBar( "###categories" );
+            auto categories = s_achievements->GetCategories();
+            while( *categories )
+            {
+                auto& c = *categories++;
+                if( c->unlockTime > 0 )
+                {
+                    char tmp[256];
+                    if( s_achievements->CategoryNeedsAttention( c->id ) )
+                    {
+                        snprintf( tmp, 256, ICON_FA_CIRCLE_EXCLAMATION " %s###%s", c->name, c->id );
+                    }
+                    else
+                    {
+                        snprintf( tmp, 256, "%s###%s", c->name, c->id );
+                    }
+                    ImGuiTabItemFlags flags = 0;
+                    if( targetCategory == c ) flags |= ImGuiTabItemFlags_SetSelected;
+                    if( ImGui::BeginTabItem( tmp, nullptr, flags ) )
+                    {
+                        ImGui::Columns( 2 );
+                        ImGui::SetColumnWidth( 0, 300 * dpiScale );
+                        DrawAchievements( c->items );
+                        ImGui::NextColumn();
+                        if( s_achievementItem )
+                        {
+                            const tracy::data::ctx ctx = { s_bigFont, s_smallFont, s_fixedWidth };
+                            s_achievementItem->description( ctx );
+                        }
+                        ImGui::EndColumns();
+                        ImGui::EndTabItem();
+                    }
+                }
+            }
+            ImGui::EndTabBar();
+            ImGui::End();
+        }
     }
 
     bptr->EndFrame();

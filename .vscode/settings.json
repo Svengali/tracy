@@ -4,9 +4,9 @@
         "${workspaceFolder}/profiler",
         "${workspaceFolder}/capture",
         "${workspaceFolder}/csvexport",
-        "${workspaceFolder}/import-chrome",
-        "${workspaceFolder}/import-fuchsia",
+        "${workspaceFolder}/import",
         "${workspaceFolder}/update",
+        "${workspaceFolder}/test",
         "${workspaceFolder}",
     ],
     "cmake.buildDirectory": "${sourceDirectory}/build",
@@ -16,4 +16,5 @@
         "variant": { "statusBarVisibility": "compact" }
     },
     "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+    "lldb.launch.initCommands": ["command script import ${workspaceRoot}/extra/natvis.py"],
 }

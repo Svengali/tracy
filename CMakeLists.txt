@@ -5,6 +5,8 @@ include(cmake/version.cmake)
 
 project(Tracy LANGUAGES CXX VERSION ${TRACY_VERSION_STRING})
 
+file(GENERATE OUTPUT .gitignore CONTENT "*")
+
 if(${BUILD_SHARED_LIBS})
 	set(DEFAULT_STATIC OFF)
 else()
@@ -36,13 +38,20 @@ target_link_libraries(
 )
 
 # Public dependency on some libraries required when using Mingw
-if(WIN32 AND ${CMAKE_CXX_COMPILER_ID} MATCHES "GNU")
+if(WIN32 AND ${CMAKE_CXX_COMPILER_ID} MATCHES "GNU|Clang")
     target_link_libraries(TracyClient PUBLIC ws2_32 dbghelp)
 endif()
 
 if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
     find_library(EXECINFO_LIBRARY NAMES execinfo REQUIRED)
     target_link_libraries(TracyClient PUBLIC ${EXECINFO_LIBRARY})
+endif()
+
+if(TRACY_LIBUNWIND_BACKTRACE)
+    include(FindPkgConfig)
+    pkg_check_modules(unwind REQUIRED libunwind)
+    target_include_directories(TracyClient INTERFACE ${unwind_INCLUDE_DIRS})
+    target_link_libraries(TracyClient INTERFACE ${unwind_LINK_LIBRARIES})
 endif()
 
 add_library(Tracy::TracyClient ALIAS TracyClient)
@@ -83,6 +92,12 @@ set_option(TRACY_LIBUNWIND_BACKTRACE "Use libunwind backtracing where supported"
 set_option(TRACY_SYMBOL_OFFLINE_RESOLVE "Instead of full runtime symbol resolution, only resolve the image path and offset to enable offline symbol resolution" OFF)
 set_option(TRACY_LIBBACKTRACE_ELF_DYNLOAD_SUPPORT "Enable libbacktrace to support dynamically loaded elfs in symbol resolution resolution after the first symbol resolve operation" OFF)
 
+# advanced
+set_option(TRACY_VERBOSE "[advanced] Verbose output from the profiler" OFF)
+mark_as_advanced(TRACY_VERBOSE)
+set_option(TRACY_DEMANGLE "[advanced] Don't use default demangling function - You'll need to provide your own" OFF)
+mark_as_advanced(TRACY_DEMANGLE)
+
 if(NOT TRACY_STATIC)
     target_compile_definitions(TracyClient PRIVATE TRACY_EXPORTS)
     target_compile_definitions(TracyClient PUBLIC TRACY_IMPORTS)
@@ -107,6 +122,7 @@ set(client_includes
     ${TRACY_PUBLIC_DIR}/client/tracy_concurrentqueue.h
     ${TRACY_PUBLIC_DIR}/client/tracy_rpmalloc.hpp
     ${TRACY_PUBLIC_DIR}/client/tracy_SPSCQueue.h
+    ${TRACY_PUBLIC_DIR}/client/TracyKCore.hpp
     ${TRACY_PUBLIC_DIR}/client/TracyArmCpuTable.hpp
     ${TRACY_PUBLIC_DIR}/client/TracyCallstack.h
     ${TRACY_PUBLIC_DIR}/client/TracyCallstack.hpp
@@ -145,7 +161,12 @@ install(TARGETS TracyClient
         EXPORT TracyConfig
         RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
         LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT lib)
+# Export targets to build tree root
+export(TARGETS TracyClient
+       NAMESPACE Tracy::
+       FILE ${CMAKE_BINARY_DIR}/TracyTargets.cmake)
 install(FILES ${tracy_includes}
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/tracy)
 install(FILES ${client_includes}
