@@ -3727,6 +3727,7 @@ void Profiler::ReportTopology()
     struct CpuData
     {
         uint32_t package;
+        uint32_t die;
         uint32_t core;
         uint32_t thread;
     };
@@ -3739,23 +3740,55 @@ void Profiler::ReportTopology()
 #  endif
     if( !_GetLogicalProcessorInformationEx ) return;
 
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX* packageInfo = nullptr;
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX* dieInfo = nullptr;
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX* coreInfo = nullptr;
+
     DWORD psz = 0;
     _GetLogicalProcessorInformationEx( RelationProcessorPackage, nullptr, &psz );
-    auto packageInfo = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)tracy_malloc( psz );
-    auto res = _GetLogicalProcessorInformationEx( RelationProcessorPackage, packageInfo, &psz );
-    assert( res );
+    if( GetLastError() == ERROR_INSUFFICIENT_BUFFER )
+    {
+        packageInfo = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)tracy_malloc( psz );
+        auto res = _GetLogicalProcessorInformationEx( RelationProcessorPackage, packageInfo, &psz );
+        assert( res );
+    }
+    else
+    {
+        psz = 0;
+    }
+
+    DWORD dsz = 0;
+    _GetLogicalProcessorInformationEx( RelationProcessorDie, nullptr, &dsz );
+    if( GetLastError() == ERROR_INSUFFICIENT_BUFFER )
+    {
+        dieInfo = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)tracy_malloc( dsz );
+        auto res = _GetLogicalProcessorInformationEx( RelationProcessorDie, dieInfo, &dsz );
+        assert( res );
+    }
+    else
+    {
+        dsz = 0;
+    }
 
     DWORD csz = 0;
     _GetLogicalProcessorInformationEx( RelationProcessorCore, nullptr, &csz );
-    auto coreInfo = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)tracy_malloc( csz );
-    res = _GetLogicalProcessorInformationEx( RelationProcessorCore, coreInfo, &csz );
-    assert( res );
+    if( GetLastError() == ERROR_INSUFFICIENT_BUFFER )
+    {
+        coreInfo = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)tracy_malloc( csz );
+        auto res = _GetLogicalProcessorInformationEx( RelationProcessorCore, coreInfo, &csz );
+        assert( res );
+    }
+    else
+    {
+        csz = 0;
+    }
 
     SYSTEM_INFO sysinfo;
     GetSystemInfo( &sysinfo );
     const uint32_t numcpus = sysinfo.dwNumberOfProcessors;
 
     auto cpuData = (CpuData*)tracy_malloc( sizeof( CpuData ) * numcpus );
+    memset( cpuData, 0, sizeof( CpuData ) * numcpus );
     for( uint32_t i=0; i<numcpus; i++ ) cpuData[i].thread = i;
 
     int idx = 0;
@@ -3769,6 +3802,24 @@ void Profiler::ReportTopology()
         while( mask != 0 )
         {
             if( mask & 1 ) cpuData[core].package = idx;
+            core++;
+            mask >>= 1;
+        }
+        ptr = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)(((char*)ptr) + ptr->Size);
+        idx++;
+    }
+
+    idx = 0;
+    ptr = dieInfo;
+    while( (char*)ptr < ((char*)dieInfo) + dsz )
+    {
+        assert( ptr->Relationship == RelationProcessorDie );
+        // FIXME account for GroupCount
+        auto mask = ptr->Processor.GroupMask[0].Mask;
+        int core = 0;
+        while( mask != 0 )
+        {
+            if( mask & 1 ) cpuData[core].die = idx;
             core++;
             mask >>= 1;
         }
@@ -3800,6 +3851,7 @@ void Profiler::ReportTopology()
 
         TracyLfqPrepare( QueueType::CpuTopology );
         MemWrite( &item->cpuTopology.package, data.package );
+        MemWrite( &item->cpuTopology.die, data.die );
         MemWrite( &item->cpuTopology.core, data.core );
         MemWrite( &item->cpuTopology.thread, data.thread );
 
@@ -3835,12 +3887,20 @@ void Profiler::ReportTopology()
         fclose( f );
         cpuData[i].package = uint32_t( atoi( buf ) );
         cpuData[i].thread = i;
+
         sprintf( path, "%s%i/topology/core_id", basePath, i );
         f = fopen( path, "rb" );
         read = fread( buf, 1, 1024, f );
         buf[read] = '\0';
         fclose( f );
         cpuData[i].core = uint32_t( atoi( buf ) );
+
+        sprintf( path, "%s%i/topology/die_id", basePath, i );
+        f = fopen( path, "rb" );
+        read = fread( buf, 1, 1024, f );
+        buf[read] = '\0';
+        fclose( f );
+        cpuData[i].die = uint32_t( atoi( buf ) );
     }
 
     for( int i=0; i<numcpus; i++ )
@@ -3849,6 +3909,7 @@ void Profiler::ReportTopology()
 
         TracyLfqPrepare( QueueType::CpuTopology );
         MemWrite( &item->cpuTopology.package, data.package );
+        MemWrite( &item->cpuTopology.die, data.die );
         MemWrite( &item->cpuTopology.core, data.core );
         MemWrite( &item->cpuTopology.thread, data.thread );
 
