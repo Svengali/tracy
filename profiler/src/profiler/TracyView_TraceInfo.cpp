@@ -3,6 +3,8 @@
 #include "TracyImGui.hpp"
 #include "TracyPrint.hpp"
 #include "TracyView.hpp"
+#include "tracy_pdqsort.h"
+#include "../Fonts.hpp"
 
 namespace tracy
 {
@@ -15,7 +17,7 @@ void View::DrawInfo()
     ImGui::SetNextWindowSize( ImVec2( 400 * scale, 650 * scale ), ImGuiCond_FirstUseEver );
     ImGui::Begin( "Trace information", &m_showInfo, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse );
     if( ImGui::GetCurrentWindowRead()->SkipItems ) { ImGui::End(); return; }
-    ImGui::PushFont( m_bigFont );
+    ImGui::PushFont( g_fonts.normal, FontBig );
     TextFocused( "Program:", m_worker.GetCaptureProgram().c_str() );
     ImGui::PopFont();
     const auto exectime = m_worker.GetExecutableTime();
@@ -75,7 +77,6 @@ void View::DrawInfo()
         ImGui::SameLine();
         const auto version = m_worker.GetTraceVersion();
         ImGui::Text( "%i.%i.%i", version >> 16, ( version >> 8 ) & 0xFF, version & 0xFF );
-        TextFocused( "Queue delay:", TimeToString( m_worker.GetDelay() ) );
         TextFocused( "Timer resolution:", TimeToString( m_worker.GetResolution() ) );
         TextFocused( "CPU zones:", RealToString( m_worker.GetZoneCount() ) );
         ImGui::SameLine();
@@ -695,7 +696,7 @@ void View::DrawInfo()
             char buf[128];
 
             const auto ty = ImGui::GetFontSize();
-            ImGui::PushFont( m_smallFont );
+            ImGui::PushFont( g_fonts.normal, FontSmall );
             const auto sty = ImGui::GetFontSize();
             ImGui::PopFont();
             const float margin = round( ty * 0.5 );
@@ -710,7 +711,7 @@ void View::DrawInfo()
             for( auto& package : topology )
             {
                 sprintf( buf, ICON_FA_BOX " Package %" PRIu32, package.first );
-                ImGui::PushFont( m_smallFont );
+                ImGui::PushFont( g_fonts.normal, FontSmall );
                 const auto psz = ImGui::CalcTextSize( buf ).x;
                 if( psz > ptsz ) ptsz = psz;
                 ImGui::PopFont();
@@ -752,7 +753,7 @@ void View::DrawInfo()
             std::vector<decltype(topology.begin())> tsort;
             tsort.reserve( topology.size() );
             for( auto it = topology.begin(); it != topology.end(); ++it ) tsort.emplace_back( it );
-            std::sort( tsort.begin(), tsort.end(), [] ( const auto& l, const auto& r ) { return l->first < r->first; } );
+            pdqsort_branchless( tsort.begin(), tsort.end(), [] ( const auto& l, const auto& r ) { return l->first < r->first; } );
             for( auto& package : tsort )
             {
                 if( package->first != 0 ) dpos.y += ty;
@@ -763,7 +764,7 @@ void View::DrawInfo()
                 std::vector<decltype(package->second.begin())> dsort;
                 dsort.reserve( package->second.size() );
                 for( auto it = package->second.begin(); it != package->second.end(); ++it ) dsort.emplace_back( it );
-                std::sort( dsort.begin(), dsort.end(), [] ( const auto& l, const auto& r ) { return l->first < r->first; } );
+                pdqsort_branchless( dsort.begin(), dsort.end(), [] ( const auto& l, const auto& r ) { return l->first < r->first; } );
                 for( auto& die : dsort )
                 {
                     dpos.y += small;
@@ -786,7 +787,7 @@ void View::DrawInfo()
                     std::vector<decltype(die->second.begin())> csort;
                     csort.reserve( die->second.size() );
                     for( auto it = die->second.begin(); it != die->second.end(); ++it ) csort.emplace_back( it );
-                    std::sort( csort.begin(), csort.end(), [] ( const auto& l, const auto& r ) { return l->first < r->first; } );
+                    pdqsort_branchless( csort.begin(), csort.end(), [] ( const auto& l, const auto& r ) { return l->first < r->first; } );
                     auto cpos = dpos + ImVec2( margin, margin );
                     int ll = cpl;
                     for( auto& core : csort )
